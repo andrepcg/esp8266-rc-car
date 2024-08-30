@@ -3,10 +3,7 @@
 #include <ESP8266WebServer.h>
 #include "FS.h"
 #include <LittleFS.h>
-
-// Replace these with your network credentials
-const char* ssid = "";
-const char* password = "";
+#include <WiFiManager.h>
 
 int PING_TIMEOUT = 2000; // stops all motors if no ping is received in 2 seconds
 
@@ -14,15 +11,6 @@ int PIN_FORWARD = D1;
 int PIN_BACKWARD = D2;
 int PIN_LEFT = D3;
 int PIN_RIGHT = D4;
-
-// Set your Static IP address
-IPAddress local_IP(10, 0, 0, 216);
-// Set your Gateway IP address
-IPAddress gateway(10, 0, 0, 1);
-
-IPAddress subnet(255, 255, 255, 0);
-IPAddress primaryDNS(10, 0, 0, 32);
-IPAddress secondaryDNS(10, 0, 0, 32);
 
 void handleForward();
 void handleBackward();
@@ -48,6 +36,10 @@ unsigned long lastPing = 0;
 void setup() {
   Serial.begin(115200);
 
+  WiFiManager wm;
+  wm.setHostname("rc-car");
+  wm.autoConnect("RC-CAR");
+
   if(!LittleFS.begin()){
     Serial.println("Not able to mount LittleFS");
     return;
@@ -57,19 +49,6 @@ void setup() {
   pinMode(PIN_BACKWARD, OUTPUT);
   pinMode(PIN_LEFT,     OUTPUT);
   pinMode(PIN_RIGHT,    OUTPUT);
-
-  if (!WiFi.config(local_IP, gateway, subnet, primaryDNS, secondaryDNS)) {
-    Serial.println("STA Failed to configure");
-  }
-
-  Serial.print("Connecting to ");
-  Serial.println(ssid);
-
-  WiFi.begin(ssid, password);
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
-  }
 
   Serial.println("");
   Serial.println("WiFi connected.");
@@ -93,6 +72,8 @@ void setup() {
 }
 
 void loop() {
+  // dead-man switch. if last command sent by the browser is to accelerate but no ping is received,
+  // let's stop all motors to prevent the car running away into the sunset
   if (millis() - lastPing > PING_TIMEOUT) {
     stopAllMotors();
   }
