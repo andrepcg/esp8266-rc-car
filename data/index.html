@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RC Car Controls</title>
+    <style>
+        body {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            font-family: Arial, sans-serif;
+        }
+        .controls {
+            display: grid;
+            grid-template-columns: 100px 100px 100px;
+            grid-template-rows: 100px 100px 100px;
+            gap: 10px;
+        }
+        button {
+            width: 100px;
+            height: 100px;
+            font-size: 18px;
+            cursor: pointer;
+            border: 2px solid #333;
+            background-color: #f0f0f0;
+            transition: background-color 0.2s;
+        }
+        button.pressed {
+            background-color: #333;
+            color: #fff;
+        }
+        #speed {
+            grid-column: 2 / 3;
+            grid-row: 2 / 3;
+            width: 50px;
+            height: 50px;
+            font-size: 18px;
+            cursor: pointer;
+            border: 2px solid #333;
+            background-color: #f0f0f0;
+            margin:auto;
+        }
+        #up {
+            grid-column: 2 / 3;
+        }
+        #left {
+            grid-column: 1 / 2;
+            grid-row: 2 / 3;
+        }
+        #right {
+            grid-column: 3 / 4;
+            grid-row: 2 / 3;
+        }
+        #down {
+            grid-column: 2 / 3;
+            grid-row: 3 / 4;
+        }
+        .ping {
+          position: absolute;
+          bottom: 0;
+          right: 0;
+          padding: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="controls">
+        <button id="up" onclick="sendCommand('forward')">🔼</button>
+        <button id="left" onclick="sendCommand('left')">◀️</button>
+        <button id="right" onclick="sendCommand('right')">▶️</button>
+        <button id="down" onclick="sendCommand('backward')">🔽</button>
+        <input type="number" step="5" min="0" max="100" value="80" class="slider" id="speed" />
+    </div>
+    <div class="ping">
+      Ping: <span id="ping-value"></span>
+    </div>
+
+    <script>
+      let pings = [0];
+      const pingInterval = setInterval(async () => {
+        const startTimestamp = Date.now();
+        await fetch('/ping');
+        const endTimestamp = Date.now();
+        const latency = endTimestamp - startTimestamp;
+        pings.push(latency);
+
+        if (pings.length > 10) {
+          pings.shift();
+        }
+
+        const averagePing = Math.round(pings.reduce((acc, curr) => acc + curr, 0) / pings.length, 2);
+        document.getElementById('ping-value').innerText = `${averagePing}ms`;
+      }, 1000);
+
+        document.addEventListener('keydown', function(event) {
+            const speed = document.getElementById('speed').value;
+            let button;
+
+            switch(event.key) {
+                case 'ArrowUp':
+                    sendCommand('forward', { speed: speed });
+                    button = document.getElementById('up');
+                    break;
+                case 'ArrowLeft':
+                    sendCommand('left');
+                    button = document.getElementById('left');
+                    break;
+                case 'ArrowRight':
+                    sendCommand('right');
+                    button = document.getElementById('right');
+                    break;
+                case 'ArrowDown':
+                    sendCommand('backward', { speed: speed });
+                    button = document.getElementById('down');
+                    break;
+            }
+            if (button) button.classList.add('pressed');
+        });
+
+        document.addEventListener('keyup', function(event) {
+            let button;
+            switch(event.key) {
+                case 'ArrowUp':
+                    sendCommand('stopForward');
+                    button = document.getElementById('up');
+                    break;
+                case 'ArrowLeft':
+                    sendCommand('stopLeft');
+                    button = document.getElementById('left');
+                    break;
+                case 'ArrowRight':
+                    sendCommand('stopRight');
+                    button = document.getElementById('right');
+                    break;
+                case 'ArrowDown':
+                    sendCommand('stopBackward');
+                    button = document.getElementById('down');
+                    break;
+            }
+
+            if (button) button.classList.remove('pressed');
+        });
+
+        function sendCommand(command, query = {}) {
+          // add query parameters to the URL
+          const url = new URL('/' + command, window.location);
+          Object.keys(query).forEach(key => url.searchParams.append(key, query[key]));
+          fetch(url);
+        }
+    </script>
+</body>
+</html>
