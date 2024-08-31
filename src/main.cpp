@@ -161,11 +161,25 @@ void broadcastSensorData() {
     return;
   }
 
-  String response = "SENSORS#";
+  // String response = "SENSORS#";
+  // for (int i = 0; i < COUNT_SENSORS; i++) {
+  //   response += sensors[i].name + ":" + String(sensors[i].last_range) + ";";
+  // }
+  // webSocket.broadcastTXT(response);
+
+  // let's encode the sensor data in binary format in the following way: [sensor1.id, sensor1.range, sensor2.id, sensor2.range, ...]
+  int length = (COUNT_SENSORS * 3) + 1;
+  uint8_t data[length];
+  data[0] = 0x02; // sensor data
+
+  // [0x2,0x30,0xff,0xff,0x31,0xff,0xff,0x32,0xff,0xff]
+
   for (int i = 0; i < COUNT_SENSORS; i++) {
-    response += sensors[i].name + ":" + String(sensors[i].last_range) + ";";
+    data[i * 3 + 1] = sensors[i].id;
+    data[i * 3 + 1 + 1] = sensors[i].last_range >> 8;
+    data[i * 3 + 2 + 1] = sensors[i].last_range & 0xFF;
   }
-  webSocket.broadcastTXT(response);
+  webSocket.broadcastBIN(data, sizeof(uint8_t) * length);
   lastSensorBroadcast = millis();
 }
 
@@ -226,37 +240,28 @@ void Process_continuous_range() {
   }
 }
 
-
-// data: MOTOR:FORWARD:on:100
-int getSpeedFromString(String &data) {
-  int index = data.indexOf(":on");
-  String speed = data.substring(index + 4);
-  return map(speed.toInt(), 0, 100, 0, 255);
-}
-
-void wsHandleForward(String &data, bool stop = false) {
-  if (stop) {
+void wsHandleForward(int speed = 0) {
+  if (speed == 0) {
     analogWrite(PIN_FORWARD, 0);
     analogWrite(PIN_REVERSE, 0);
   } else {
-
-    analogWrite(PIN_FORWARD, getSpeedFromString(data));
+    analogWrite(PIN_FORWARD, map(speed, 0, 255, 0, 255));
     analogWrite(PIN_REVERSE, 0);
   }
 }
 
-void wsHandleBackward(String &data, bool stop = false) {
-  if (stop) {
+void wsHandleBackward(int speed = 0) {
+  if (speed) {
     analogWrite(PIN_REVERSE, 0);
     analogWrite(PIN_FORWARD, 0);
   } else {
     analogWrite(PIN_FORWARD, 0);
-    analogWrite(PIN_REVERSE, getSpeedFromString(data));
+    analogWrite(PIN_REVERSE, map(speed, 0, 255, 0, 255));
   }
 }
 
-void wsHandleLeft(bool stop = false) {
-  if (stop) {
+void wsHandleLeft(int speed = 0) {
+  if (speed == 0) {
     digitalWrite(PIN_LEFT, LOW);
     digitalWrite(PIN_RIGHT, LOW);
   } else {
@@ -265,8 +270,8 @@ void wsHandleLeft(bool stop = false) {
   }
 }
 
-void wsHandleRight(bool stop = false) {
-  if (stop) {
+void wsHandleRight(int speed = 0) {
+  if (speed == 0) {
     digitalWrite(PIN_LEFT, LOW);
     digitalWrite(PIN_RIGHT, LOW);
   } else {
@@ -275,41 +280,49 @@ void wsHandleRight(bool stop = false) {
   }
 }
 
+void onBinary(uint8_t *binary, uint8_t num) {
+  switch(binary[0]) {
+    case 0x01: // PING
+      lastPing = millis();
+      webSocket.sendBIN(num, binary, 1);
+      break;
+
+    case 0x2: // motor forward
+      wsHandleForward(binary[1]);
+      break;
+
+    case 0x3: // motor reverse
+      wsHandleBackward(binary[1]);
+      break;
+
+    case 0x4: // motor left
+      wsHandleLeft(binary[1]);
+      break;
+
+    case 0x5: // motor right
+      wsHandleRight(binary[1]);
+      break;
+
+    case 0x6: // motor stop
+      stopAllMotors();
+      break;
+  }
+}
+
 void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length) {
   switch(type) {
     case WStype_DISCONNECTED:
+      Serial.printf("[%u] Disconnected!\n", num);
+      stopAllMotors();
       break;
+
+    case WStype_BIN:
+      onBinary((uint8_t *)payload, num);
+      break;
+
     case WStype_TEXT:
       String data = (char *)payload;
-
-      if (data == "PING") {
-        lastPing = millis();
-        webSocket.sendTXT(num, "PONG");
-      }
-
-      if (data.startsWith("MOTOR")) {
-        if (data.startsWith("MOTOR:FORWARD:on")) {
-          wsHandleForward(data, false);
-        } else if (data == "MOTOR:FORWARD:off") {
-          wsHandleForward(data, true);
-        } else if (data.startsWith("MOTOR:REVERSE:on")) {
-          wsHandleBackward(data, false);
-        } else if (data == "MOTOR:REVERSE:off") {
-          wsHandleBackward(data, true);
-        } else if (data == "MOTOR:LEFT:on") {
-          wsHandleLeft(false);
-        } else if (data == "MOTOR:LEFT:off") {
-          wsHandleLeft(true);
-        } else if (data == "MOTOR:RIGHT:on") {
-          wsHandleRight(false);
-        } else if (data == "MOTOR:RIGHT:off") {
-          wsHandleRight(true);
-        } else if (data == "MOTOR:STOP") {
-          stopAllMotors();
-        }
-      }
-
+      Serial.println("Received text: " + data);
       break;
   }
-
 }

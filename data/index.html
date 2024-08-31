@@ -136,13 +136,114 @@
         let lastPingSentAt = 0;
         let lastPongReceivedAt = 0;
 
+        const SENSORS = {
+            0x30: 'front_distance',
+            0x31: 'left_distance',
+            0x32: 'right_distance'
+        }
+
         function distanceToColor(distanceMm) {
-            if (distanceMm < 150) {
+            if (distanceMm < 200) {
                 return 'red';
-            } else if (distanceMm < 400) {
+            } else if (distanceMm < 700) {
                 return 'yellow';
             } else {
                 return 'green';
+            }
+        }
+
+        function handlePong() {
+            lastPongReceivedAt = Date.now();
+            const latency = lastPongReceivedAt - lastPingSentAt;
+            pings.push(latency);
+
+            if (pings.length > 10) {
+                pings.shift();
+            }
+
+            const averagePing = Math.round(pings.reduce((acc, curr) => acc + curr, 0) / pings.length, 2);
+            document.getElementById('ping-value').innerText = `${latency}ms`;
+        }
+
+        function handleSensorData(view) {
+            for (let i = 1; i < view.byteLength; i += 3) {
+                const sensorId = view.getUint8(i);
+                const distance_1 = view.getUint8(i + 1);
+                const distance_2 = view.getUint8(i + 2);
+                const distance = (distance_1 << 8) | distance_2;
+
+                const sensorElement = document.getElementById(SENSORS[sensorId]);
+                if (sensorElement) {
+                    sensorElement.style.backgroundColor = distanceToColor(distance);
+                }
+            }
+
+        }
+
+        function wsMessageHandler(evt) {
+
+            if (event.data instanceof ArrayBuffer) {
+                const view = new DataView(event.data);
+
+                if (view.getUint8(0) === 0x1) {
+                    handlePong();
+                }
+                else if (view.getUint8(0) === 0x2) {
+                    handleSensorData(view);
+                }
+            }
+            else {
+                console.log('Received: ' + evt.data);
+            }
+        }
+
+        const ACTIONS = {
+            'ArrowUp': {
+                command: speed => Uint8Array.from([0x2, speed]),
+                release: (...args) => Uint8Array.from([0x2, 0x0]),
+                button: 'up'
+            },
+            'ArrowDown': {
+                command: speed => Uint8Array.from([0x3, speed]),
+                release: (...args) => Uint8Array.from([0x3, 0x0]),
+                button: 'down'
+            },
+            'ArrowLeft': {
+                command: (...args) => Uint8Array.from([0x4, 0xFF]),
+                release: (...args) => Uint8Array.from([0x4, 0x0]),
+                button: 'left'
+            },
+            'ArrowRight': {
+                command: (...args) => Uint8Array.from([0x5, 0xFF]),
+                release: (...args) => Uint8Array.from([0x5, 0x0]),
+                button: 'right'
+            },
+
+        }
+
+        function onKeyDown(event) {
+            const speed = document.getElementById('speed').value;
+
+            const action = ACTIONS[event.key];
+            if (!action) return;
+
+            sendCommand(action.command(speed));
+            if (action.button) {
+                const button = document.getElementById(action.button);
+                if (button) button.classList.add('pressed');
+            }
+        }
+
+        function onKeyUp(event) {
+            let button;
+
+            const action = ACTIONS[event.key];
+            if (!action) return;
+
+            sendCommand(action.release());
+            if (action.button) {
+                const button = document.getElementById(action.button);
+                if (button) button.classList.remove('pressed');
             }
         }
 
@@ -151,93 +252,26 @@
             websock.onopen = function(evt) { console.log('websock open'); };
             websock.onclose = function(evt) { console.log('websock close'); };
             websock.onerror = function(evt) { console.error('WS error', evt); };
-            websock.onmessage = function(evt) {
-                if (evt.data === 'PONG') {
-                    lastPongReceivedAt = Date.now();
-                    const latency = lastPongReceivedAt - lastPingSentAt;
-                    pings.push(latency);
-
-                    if (pings.length > 10) {
-                        pings.shift();
-                    }
-
-                    const averagePing = Math.round(pings.reduce((acc, curr) => acc + curr, 0) / pings.length, 2);
-                    document.getElementById('ping-value').innerText = `${latency}ms`;
-                }
-
-                if (evt.data.startsWith('SENSORS#')) {
-                    const [_, value_str] = evt.data.split('#');
-                    const values = value_str.split(';');
-                    values.filter(v => v != "").forEach((value) => {
-                        const [sensor, d] = value.split(':');
-                        const distance = parseInt(d, 10);
-                        const sensorElement = document.getElementById(sensor);
-                        if (sensorElement) {
-                            sensorElement.style.backgroundColor =distanceToColor(distance);
-                        }
-                    });
-                }
-            };
+            websock.onmessage = wsMessageHandler;
+            websock.binaryType = "arraybuffer";
         }
 
 
         const pingInterval = setInterval(async () => {
             lastPingSentAt = Date.now();
-            websock.send('PING');
+            sendCommand(Uint8Array.from([0x1]));
         }, 2000);
 
-        document.addEventListener('keydown', function(event) {
-            const speed = document.getElementById('speed').value;
-            let button;
+        document.addEventListener('keydown', onKeyDown);
+        document.addEventListener('keyup', onKeyUp);
 
-            switch(event.key) {
-                case 'ArrowUp':
-                    sendCommand(`MOTOR:FORWARD:on:${speed}`);
-                    button = document.getElementById('up');
-                    break;
-                case 'ArrowLeft':
-                    sendCommand('MOTOR:LEFT:on');
-                    button = document.getElementById('left');
-                    break;
-                case 'ArrowRight':
-                    sendCommand('MOTOR:RIGHT:on');
-                    button = document.getElementById('right');
-                    break;
-                case 'ArrowDown':
-                    sendCommand(`MOTOR:REVERSE:on:${speed}`);
-                    button = document.getElementById('down');
-                    break;
-            }
-            if (button) button.classList.add('pressed');
-        });
-
-        document.addEventListener('keyup', function(event) {
-            let button;
-            switch(event.key) {
-                case 'ArrowUp':
-                    sendCommand('MOTOR:FORWARD:off');
-                    button = document.getElementById('up');
-                    break;
-                case 'ArrowLeft':
-                    sendCommand('MOTOR:LEFT:off');
-                    button = document.getElementById('left');
-                    break;
-                case 'ArrowRight':
-                    sendCommand('MOTOR:RIGHT:off');
-                    button = document.getElementById('right');
-                    break;
-                case 'ArrowDown':
-                    sendCommand('MOTOR:REVERSE:off');
-                    button = document.getElementById('down');
-                    break;
-            }
-
-            if (button) button.classList.remove('pressed');
-        });
-
-        function sendCommand(command) {
+        function sendCommand(data) {
+            let cmd = data;
             if (websock.readyState === 1) {
-                websock.send(command);
+                if (ArrayBuffer.isView(cmd)) {
+                    cmd = data.buffer;
+                }
+                websock.send(cmd);
             }
         }
 
