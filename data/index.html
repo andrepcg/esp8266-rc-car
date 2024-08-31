@@ -19,7 +19,7 @@
             grid-template-rows: 100px 100px 100px;
             gap: 10px;
         }
-        button {
+        .controls button {
             width: 100px;
             height: 100px;
             font-size: 18px;
@@ -28,7 +28,7 @@
             background-color: #f0f0f0;
             transition: background-color 0.2s;
         }
-        button.pressed {
+        .controls button.pressed {
             background-color: #333;
             color: #fff;
         }
@@ -64,36 +64,127 @@
           right: 0;
           padding: 10px;
         }
+        .sensors {
+            display: grid;
+            grid-template-columns: 50px 50px 50px;
+            grid-template-rows: 50px 50px 50px;
+            gap: 10px;
+            margin: auto;
+        }
+        .sensors .sensor {
+            width: 50px;
+            height: 50px;
+            background-color: red;
+            border: 2px solid #333;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            transition: background-color 0.2s;
+        }
+        .sensors #front_distance {
+            grid-column: 2 / 3;
+            grid-row: 1 / 2;
+        }
+        .sensors #left_distance {
+            grid-column: 1 / 2;
+            grid-row: 2 / 3;
+        }
+        .sensors #right_distance {
+            grid-column: 3 / 4;
+            grid-row: 2 / 3;
+        }
+        .sensors #car {
+            grid-column: 2 / 3;
+            grid-row: 2 / 3;
+            font-size: 40px;
+            margin: auto;
+        }
+        .sensor {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
     </style>
 </head>
 <body>
-    <div class="controls">
-        <button id="up" onclick="sendCommand('forward')">🔼</button>
-        <button id="left" onclick="sendCommand('left')">◀️</button>
-        <button id="right" onclick="sendCommand('right')">▶️</button>
-        <button id="down" onclick="sendCommand('backward')">🔽</button>
-        <input type="number" step="5" min="0" max="100" value="80" class="slider" id="speed" />
+    <div class="container">
+        <div class="sensors">
+            <div class="sensor" id="front_distance"></div>
+            <div class="sensor" id="left_distance"></div>
+            <div class="sensor" id="right_distance"></div>
+            <div id="car">🚘</div>
+        </div>
+
+        <div class="controls">
+            <button id="up">🔼</button>
+            <button id="left">◀️</button>
+            <button id="right">▶️</button>
+            <button id="down">🔽</button>
+            <input type="number" step="5" min="0" max="100" value="80" class="slider" id="speed" />
+        </div>
+
     </div>
     <div class="ping">
       Ping: <span id="ping-value"></span>
     </div>
 
     <script>
-      let pings = [0];
-      const pingInterval = setInterval(async () => {
-        const startTimestamp = Date.now();
-        await fetch('/ping');
-        const endTimestamp = Date.now();
-        const latency = endTimestamp - startTimestamp;
-        pings.push(latency);
 
-        if (pings.length > 10) {
-          pings.shift();
+        var websock;
+        let pings = [0];
+        let lastPingSentAt = 0;
+        let lastPongReceivedAt = 0;
+
+        function distanceToColor(distanceMm) {
+            if (distanceMm < 150) {
+                return 'red';
+            } else if (distanceMm < 400) {
+                return 'yellow';
+            } else {
+                return 'green';
+            }
         }
 
-        const averagePing = Math.round(pings.reduce((acc, curr) => acc + curr, 0) / pings.length, 2);
-        document.getElementById('ping-value').innerText = `${averagePing}ms`;
-      }, 1000);
+        function start() {
+            websock = new WebSocket(`ws://${window.location.hostname}:1235/`);
+            websock.onopen = function(evt) { console.log('websock open'); };
+            websock.onclose = function(evt) { console.log('websock close'); };
+            websock.onerror = function(evt) { console.error('WS error', evt); };
+            websock.onmessage = function(evt) {
+                if (evt.data === 'PONG') {
+                    lastPongReceivedAt = Date.now();
+                    const latency = lastPongReceivedAt - lastPingSentAt;
+                    pings.push(latency);
+
+                    if (pings.length > 10) {
+                        pings.shift();
+                    }
+
+                    const averagePing = Math.round(pings.reduce((acc, curr) => acc + curr, 0) / pings.length, 2);
+                    document.getElementById('ping-value').innerText = `${latency}ms`;
+                }
+
+                if (evt.data.startsWith('SENSORS#')) {
+                    const [_, value_str] = evt.data.split('#');
+                    const values = value_str.split(';');
+                    values.filter(v => v != "").forEach((value) => {
+                        const [sensor, d] = value.split(':');
+                        const distance = parseInt(d, 10);
+                        const sensorElement = document.getElementById(sensor);
+                        if (sensorElement) {
+                            sensorElement.style.backgroundColor =distanceToColor(distance);
+                        }
+                    });
+                }
+            };
+        }
+
+
+        const pingInterval = setInterval(async () => {
+            lastPingSentAt = Date.now();
+            websock.send('PING');
+        }, 2000);
 
         document.addEventListener('keydown', function(event) {
             const speed = document.getElementById('speed').value;
@@ -101,19 +192,19 @@
 
             switch(event.key) {
                 case 'ArrowUp':
-                    sendCommand('forward', { speed: speed });
+                    sendCommand(`MOTOR:FORWARD:on:${speed}`);
                     button = document.getElementById('up');
                     break;
                 case 'ArrowLeft':
-                    sendCommand('left');
+                    sendCommand('MOTOR:LEFT:on');
                     button = document.getElementById('left');
                     break;
                 case 'ArrowRight':
-                    sendCommand('right');
+                    sendCommand('MOTOR:RIGHT:on');
                     button = document.getElementById('right');
                     break;
                 case 'ArrowDown':
-                    sendCommand('backward', { speed: speed });
+                    sendCommand(`MOTOR:REVERSE:on:${speed}`);
                     button = document.getElementById('down');
                     break;
             }
@@ -124,19 +215,19 @@
             let button;
             switch(event.key) {
                 case 'ArrowUp':
-                    sendCommand('stopForward');
+                    sendCommand('MOTOR:FORWARD:off');
                     button = document.getElementById('up');
                     break;
                 case 'ArrowLeft':
-                    sendCommand('stopLeft');
+                    sendCommand('MOTOR:LEFT:off');
                     button = document.getElementById('left');
                     break;
                 case 'ArrowRight':
-                    sendCommand('stopRight');
+                    sendCommand('MOTOR:RIGHT:off');
                     button = document.getElementById('right');
                     break;
                 case 'ArrowDown':
-                    sendCommand('stopBackward');
+                    sendCommand('MOTOR:REVERSE:off');
                     button = document.getElementById('down');
                     break;
             }
@@ -144,12 +235,13 @@
             if (button) button.classList.remove('pressed');
         });
 
-        function sendCommand(command, query = {}) {
-          // add query parameters to the URL
-          const url = new URL('/' + command, window.location);
-          Object.keys(query).forEach(key => url.searchParams.append(key, query[key]));
-          fetch(url);
+        function sendCommand(command) {
+            if (websock.readyState === 1) {
+                websock.send(command);
+            }
         }
+
+        start();
     </script>
 </body>
 </html>
