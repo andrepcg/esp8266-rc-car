@@ -4,6 +4,12 @@ Modified toy RC car with a Wemos D1 Mini (ESP8266), 1x L298N motor driver and 3x
 
 When it boots, it spawns a new wifi network that allows you to setup a proper wifi network. That network will be remembered next time.
 
+## How it works
+
+Car comes online and serves a web page for controlling.
+A websocket server is also served which handles all the communication in binary format.
+Distance sensors continuously pool ranges every 100ms
+
 ### Websocket messages from the client
 
 - `PING`: 0x1
@@ -21,3 +27,8 @@ When it boots, it spawns a new wifi network that allows you to setup a proper wi
 ## Webpage
 
 ![UI](image.png "Website")
+
+## TODO
+
+- Improve the sensor broadcast message to dinamically change which sensors get its data pushed based on the `sensor_status`. Currently it requires data from all the sensors to be sent because that's what the frontend expects
+-

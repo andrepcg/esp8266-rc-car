@@ -7,28 +7,16 @@
 #include "tof.h"
 #include <WebSocketsServer.h>
 
-Adafruit_VL53L0X front_lox;
-Adafruit_VL53L0X left_lox;
-Adafruit_VL53L0X right_lox;
+#define PING_TIMEOUT                 3500
+#define WS_SERVER_PORT               1235
+#define WEB_SERVER_PORT              1234
+#define TOF_CONTINUOUS_CYCLE_MS      100
+#define SENSOR_BROADCAST_INTERVAL_MS 300
 
-
-tofSensor_t frontSensor = { "front_distance", false, &front_lox, 0x30, A0, Adafruit_VL53L0X::VL53L0X_SENSE_HIGH_SPEED, 0 };
-tofSensor_t leftSensor  = { "left_distance",  false, &left_lox,  0x31, D7, Adafruit_VL53L0X::VL53L0X_SENSE_HIGH_SPEED, 0 };
-tofSensor_t rightSensor = { "right_distance", false, &right_lox, 0x32, D0, Adafruit_VL53L0X::VL53L0X_SENSE_HIGH_SPEED, 0 };
-
-tofSensor_t sensors[] = { frontSensor, leftSensor, rightSensor };
-const int COUNT_SENSORS = sizeof(sensors) / sizeof(sensors[0]);
-const uint16_t ALL_SENSORS_PENDING = ((1 << COUNT_SENSORS) - 1);
-uint16_t sensors_pending = ALL_SENSORS_PENDING;
-uint32_t sensor_last_cycle_time;
-
-
-int PING_TIMEOUT = 3500; // stops all motors if no ping is received in 2 seconds
-
-int PIN_FORWARD = D5;
-int PIN_REVERSE = D6;
-int PIN_LEFT = D3;
-int PIN_RIGHT = D4;
+#define PIN_FORWARD D5
+#define PIN_REVERSE D6
+#define PIN_LEFT    D3
+#define PIN_RIGHT   D4
 
 void Initialize_sensors();
 void Process_continuous_range();
@@ -36,17 +24,28 @@ void Process_continuous_range();
 void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length);
 
 void handleRoot();
-void handlePing();
 void handleFile(char *filename, char *contentType);
 
 void stopAllMotors();
 void broadcastSensorData();
 
-ESP8266WebServer server(1234);
-WebSocketsServer webSocket = WebSocketsServer(1235);
+ESP8266WebServer server(WEB_SERVER_PORT);
+WebSocketsServer webSocket = WebSocketsServer(WS_SERVER_PORT);
 
 // save timestamp of last ping
-unsigned long lastPing = 0;
+unsigned long lastPingTime = 0;
+unsigned long lastSensorBroadcastTime = 0;
+
+tofSensor_t sensors[] = {
+  { false, {}, 0x30, A0, Adafruit_VL53L0X::VL53L0X_SENSE_HIGH_SPEED, 0 },
+  { false, {}, 0x31, D7, Adafruit_VL53L0X::VL53L0X_SENSE_HIGH_SPEED, 0 },
+  { false, {}, 0x32, D0, Adafruit_VL53L0X::VL53L0X_SENSE_HIGH_SPEED, 0 }
+};
+
+const int COUNT_SENSORS = sizeof(sensors) / sizeof(sensors[0]);
+const uint16_t ALL_SENSORS_PENDING = ((1 << COUNT_SENSORS) - 1);
+uint16_t sensors_pending = ALL_SENSORS_PENDING;
+uint32_t sensor_last_cycle_time;
 
 void initVL53L0X() {
   Serial.println(F("VL53LOX_multi start, initialize IO pins"));
@@ -65,7 +64,7 @@ void startSensorsContinuous() {
     if (!sensors[i].started) {
       continue;
     }
-    sensors[i].psensor->startRangeContinuous(100); // do 100ms cycle
+    sensors[i].psensor.startRangeContinuous(TOF_CONTINUOUS_CYCLE_MS); // do 100ms cycle
   }
 }
 
@@ -90,23 +89,23 @@ void setup() {
   }
 
   pinMode(PIN_FORWARD,  OUTPUT);
-  pinMode(PIN_REVERSE, OUTPUT);
+  pinMode(PIN_REVERSE,  OUTPUT);
   pinMode(PIN_LEFT,     OUTPUT);
   pinMode(PIN_RIGHT,    OUTPUT);
 
   Serial.println("");
-  Serial.println("WiFi connected.");
-  Serial.println("IP address: ");
+  Serial.print("WiFi connected. IP address: ");
   Serial.println(WiFi.localIP());
+  Serial.println("");
 
   // Start the web server
   server.on("/", handleRoot);
 
   server.begin();
-  Serial.println("HTTP server started");
-
   webSocket.begin();
+  Serial.println("HTTP server started");
   Serial.println("WS server started");
+
   webSocket.onEvent(webSocketEvent);
 
   startSensorsContinuous();
@@ -119,13 +118,11 @@ void loop() {
 
   // dead-man switch. if last command sent by the browser is to accelerate but no ping is received,
   // let's stop all motors to prevent the car running away into the sunset
-  if (millis() - lastPing > PING_TIMEOUT) {
+  if (millis() - lastPingTime > PING_TIMEOUT) {
     stopAllMotors();
   }
 
-  // send sensor data to all clients every 100ms
   broadcastSensorData();
-
 
   server.handleClient();
   webSocket.loop();
@@ -133,11 +130,6 @@ void loop() {
 
 void handleRoot() {
   handleFile("/index.html", "text/html");
-}
-
-void handlePing() {
-  lastPing = millis();
-  server.send(200);
 }
 
 void stopAllMotors() {
@@ -153,34 +145,28 @@ void handleFile(char *filename, char *contentType) {
   f.close();
 }
 
-const int SENSOR_BROADCAST_INTERVAL = 300;
-int lastSensorBroadcast = 0;
 
 void broadcastSensorData() {
-  if (millis() - lastSensorBroadcast < SENSOR_BROADCAST_INTERVAL) {
+  // dont send too often
+  if (millis() - lastSensorBroadcastTime < SENSOR_BROADCAST_INTERVAL_MS) {
     return;
   }
-
-  // String response = "SENSORS#";
-  // for (int i = 0; i < COUNT_SENSORS; i++) {
-  //   response += sensors[i].name + ":" + String(sensors[i].last_range) + ";";
-  // }
-  // webSocket.broadcastTXT(response);
 
   // let's encode the sensor data in binary format in the following way: [sensor1.id, sensor1.range, sensor2.id, sensor2.range, ...]
   int length = (COUNT_SENSORS * 3) + 1;
   uint8_t data[length];
-  data[0] = 0x02; // sensor data
+  data[0] = 0x02; // message type
 
   // [0x2,0x30,0xff,0xff,0x31,0xff,0xff,0x32,0xff,0xff]
 
   for (int i = 0; i < COUNT_SENSORS; i++) {
     data[i * 3 + 1] = sensors[i].id;
+    // we have a 16-bit value to send, so we need to split it into two 8-bit values
     data[i * 3 + 1 + 1] = sensors[i].last_range >> 8;
     data[i * 3 + 2 + 1] = sensors[i].last_range & 0xFF;
   }
   webSocket.broadcastBIN(data, sizeof(uint8_t) * length);
-  lastSensorBroadcast = millis();
+  lastSensorBroadcastTime = millis();
 }
 
 void Initialize_sensors() {
@@ -194,7 +180,7 @@ void Initialize_sensors() {
     // one by one enable sensors and set their ID
     digitalWrite(sensors[i].shutdown_pin, HIGH);
     delay(50); // give time to wake up.
-    if (sensors[i].psensor->begin(sensors[i].id, false, &Wire, sensors[i].sensor_config)) {
+    if (sensors[i].psensor.begin(sensors[i].id, false, &Wire, sensors[i].sensor_config)) {
       found_any_sensors = true;
       Serial.print("Sensor ");
       Serial.print(sensors[i].id, HEX);
@@ -218,9 +204,9 @@ void Process_continuous_range() {
   for (uint8_t i = 0; i < COUNT_SENSORS; i++) {
     if (sensors_pending & mask) {
 
-      if (sensors[i].started && sensors[i].psensor->isRangeComplete()) {
-        sensors[i].last_range = sensors[i].psensor->readRangeResult();
-        sensors[i].sensor_status = sensors[i].psensor->readRangeStatus();
+      if (sensors[i].started && sensors[i].psensor.isRangeComplete()) {
+        sensors[i].last_range = sensors[i].psensor.readRangeResult();
+        sensors[i].sensor_status = sensors[i].psensor.readRangeStatus();
         sensors_pending ^= mask;
       }
     }
@@ -283,7 +269,7 @@ void wsHandleRight(int speed = 0) {
 void onBinary(uint8_t *binary, uint8_t num) {
   switch(binary[0]) {
     case 0x01: // PING
-      lastPing = millis();
+      lastPingTime = millis();
       webSocket.sendBIN(num, binary, 1);
       break;
 
