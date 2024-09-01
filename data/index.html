@@ -157,7 +157,7 @@
             const latency = lastPongReceivedAt - lastPingSentAt;
             pings.push(latency);
 
-            if (pings.length > 10) {
+            if (pings.length > 5) {
                 pings.shift();
             }
 
@@ -175,6 +175,7 @@
                 const sensorElement = document.getElementById(SENSORS[sensorId]);
                 if (sensorElement) {
                     sensorElement.style.backgroundColor = distanceToColor(distance);
+                    sensorElement.innerText = Math.round(distance / 10);
                 }
             }
 
